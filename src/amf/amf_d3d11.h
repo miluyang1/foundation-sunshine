@@ -7,8 +7,10 @@
 #include "amf_encoder.h"
 
 #include <d3d11.h>
+#include <deque>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include <AMF/components/Component.h>
 #include <AMF/core/Context.h>
@@ -101,8 +103,9 @@ namespace amf {
     bool ltr_slots_valid[MAX_LTR_SLOTS] = {};
     uint64_t ltr_slot_frame_index[MAX_LTR_SLOTS] = {};  // Frame index when each LTR slot was marked
 
-    // Pending output stashed during SubmitInput retry
-    ::amf::AMFDataPtr pending_output;
+    // Pending outputs stashed during SubmitInput retry
+    std::deque<::amf::AMFDataPtr> pending_outputs;
+    std::unordered_map<uint64_t, bool> frame_rfi_flags;
 
     // Statistics feedback state
     bool statistics_enabled = false;

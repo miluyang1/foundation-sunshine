@@ -616,7 +616,8 @@ namespace amf {
 
   void
   amf_d3d11::destroy_encoder() {
-    pending_output = nullptr;
+    pending_outputs.clear();
+    frame_rfi_flags.clear();
     if (encoder) {
       encoder->Terminate();
       encoder = nullptr;
@@ -667,8 +668,10 @@ namespace amf {
 
     // Set crop to actual frame dimensions (hw surfaces can be vertically aligned by 16)
     surface->SetCrop(0, 0, encode_width, encode_height);
+    surface->SetPts(static_cast<amf_pts>(frame_index));
 
     // Set per-frame properties
+    bool frame_after_ref_frame_invalidation = false;
     if (force_idr) {
       if (video_format == 0) {
         surface->SetProperty(AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_IDR);
@@ -715,7 +718,7 @@ namespace amf {
       }
 
       rfi_pending = false;
-      result.after_ref_frame_invalidation = true;
+      frame_after_ref_frame_invalidation = true;
     }
     else if (effective_ltr_slots > 0 && (frame_index % LTR_MARK_INTERVAL) == 0) {
       // Periodically mark current frame as LTR for future RFI use
@@ -735,6 +738,8 @@ namespace amf {
       current_ltr_slot = (current_ltr_slot + 1) % effective_ltr_slots;
     }
 
+    frame_rfi_flags[frame_index] = frame_after_ref_frame_invalidation;
+
     // Submit input — retry with output draining if input queue is full (like FFmpeg)
     res = encoder->SubmitInput(surface);
     if (res == AMF_INPUT_FULL) {
@@ -744,7 +749,7 @@ namespace amf {
         auto drain_res = encoder->QueryOutput(&drain_data);
         if (drain_data) {
           // Stash the output for later retrieval
-          pending_output = drain_data;
+          pending_outputs.push_back(drain_data);
         }
         if (drain_res != AMF_OK && !drain_data) {
           if (!query_timeout_supported) {
@@ -755,11 +760,13 @@ namespace amf {
       }
       if (res == AMF_INPUT_FULL) {
         BOOST_LOG(warning) << "AMF: SubmitInput still AMF_INPUT_FULL after retries, dropping frame " << frame_index;
+        frame_rfi_flags.erase(frame_index);
         return result;
       }
     }
     if (res != AMF_OK) {
       BOOST_LOG(error) << "AMF: SubmitInput failed, error: " << res;
+      frame_rfi_flags.erase(frame_index);
       // Check if the D3D11 device is lost (TDR, driver crash, etc.)
       if (device) {
         auto removed_reason = device->GetDeviceRemovedReason();
@@ -779,9 +786,9 @@ namespace amf {
 
     // Query output — if we already drained output during SubmitInput retry, use that
     ::amf::AMFDataPtr output_data;
-    if (pending_output) {
-      output_data = pending_output;
-      pending_output = nullptr;
+    if (!pending_outputs.empty()) {
+      output_data = pending_outputs.front();
+      pending_outputs.pop_front();
     }
     else {
       // Poll with retry: encoder may need a moment after SubmitInput
@@ -807,6 +814,19 @@ namespace amf {
       }
     }
     consecutive_empty_outputs = 0;
+
+    auto output_pts = output_data->GetPts();
+    if (output_pts >= 0) {
+      result.frame_index = static_cast<uint64_t>(output_pts);
+    }
+    auto rfi_flag = frame_rfi_flags.find(result.frame_index);
+    if (rfi_flag != frame_rfi_flags.end()) {
+      result.after_ref_frame_invalidation = rfi_flag->second;
+      frame_rfi_flags.erase(rfi_flag);
+    }
+    while (frame_rfi_flags.size() > 256) {
+      frame_rfi_flags.erase(frame_rfi_flags.begin());
+    }
 
     // Extract encoded bitstream
     ::amf::AMFBufferPtr buffer(output_data);
