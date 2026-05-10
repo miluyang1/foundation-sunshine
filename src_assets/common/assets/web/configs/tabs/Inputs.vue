@@ -13,16 +13,23 @@ const props = defineProps([
 const config = ref(props.config)
 
 // Tauri 环境下的 vmouse 驱动管理
-const isTauri = ref(false)
+const hasVmouseDriver = ref(false)
 const vmouseStatus = ref({ installed: false, running: false, status_text: '' })
 const vmouseLoading = ref(false)
 const vmouseOperating = ref(false)
 
+// Tauri 环境下的 ViGEmBus 虚拟手柄驱动管理
+const hasVigemDriver = ref(false)
+const vigemStatus = ref({ installed: false, running: false, version: '', version_ok: false, status_text: '' })
+const vigemLoading = ref(false)
+const vigemOperating = ref(false)
+
 onMounted(async () => {
-  if (window.isTauri && window.vmouseDriver) {
-    isTauri.value = true
-    await refreshVmouseStatus()
-  }
+  if (!window.isTauri) return
+  hasVmouseDriver.value = !!window.vmouseDriver
+  hasVigemDriver.value = !!window.vigemDriver
+  if (hasVmouseDriver.value) await refreshVmouseStatus()
+  if (hasVigemDriver.value) await refreshVigemStatus()
 })
 
 async function refreshVmouseStatus() {
@@ -57,6 +64,39 @@ async function uninstallVmouse() {
   vmouseOperating.value = false
 }
 
+async function refreshVigemStatus() {
+  vigemLoading.value = true
+  try {
+    vigemStatus.value = await window.vigemDriver.getStatus()
+  } catch { /* ignore */ }
+  vigemLoading.value = false
+}
+
+async function installVigem(force = false) {
+  const key = force ? 'config.vigem_confirm_reinstall' : 'config.vigem_confirm_install'
+  if (!confirm(t(key))) return
+  vigemOperating.value = true
+  try {
+    await window.vigemDriver.install(force)
+    setTimeout(() => refreshVigemStatus(), 2000)
+  } catch (e) {
+    alert(String(e))
+  }
+  vigemOperating.value = false
+}
+
+async function uninstallVigem() {
+  if (!confirm(t('config.vigem_confirm_uninstall'))) return
+  vigemOperating.value = true
+  try {
+    await window.vigemDriver.uninstall()
+    setTimeout(() => refreshVigemStatus(), 2000)
+  } catch (e) {
+    alert(String(e))
+  }
+  vigemOperating.value = false
+}
+
 const vmouseDotClass = computed(() => {
   if (vmouseStatus.value.running) return 'dot-active'
   if (vmouseStatus.value.installed) return 'dot-warning'
@@ -67,6 +107,23 @@ const vmouseStatusLabel = computed(() => {
   if (vmouseStatus.value.running) return t('config.vmouse_status_running')
   if (vmouseStatus.value.installed) return t('config.vmouse_status_installed')
   return t('config.vmouse_status_not_installed')
+})
+
+const vigemDotClass = computed(() => {
+  if (vigemStatus.value.running) return 'dot-active'
+  if (vigemStatus.value.installed) return 'dot-warning'
+  return 'dot-inactive'
+})
+
+const vigemStatusLabel = computed(() => {
+  if (!vigemStatus.value.installed) return t('config.vigem_status_not_installed')
+  if (!vigemStatus.value.version_ok) return t('config.vigem_status_outdated')
+  if (vigemStatus.value.running) {
+    return vigemStatus.value.version
+      ? `${t('config.vigem_status_running')} (${vigemStatus.value.version})`
+      : t('config.vigem_status_running')
+  }
+  return t('config.vigem_status_installed')
 })
 </script>
 
@@ -104,6 +161,53 @@ const vmouseStatusLabel = computed(() => {
         </PlatformLayout>
       </select>
       <div class="form-text">{{ $t('config.gamepad_desc') }}</div>
+    </div>
+
+    <!-- ViGEmBus virtual gamepad driver management (Windows + Tauri only) -->
+    <div class="mb-3" v-if="config.controller === 'enabled' && platform === 'windows' && hasVigemDriver">
+      <label class="form-label">
+        {{ $t('config.vigem_label') }}
+        <span class="badge bg-info text-dark ms-1" style="font-size: 0.7em; vertical-align: middle;">ViGEmBus</span>
+      </label>
+      <div class="form-text mb-2">{{ $t('config.vigem_desc') }}</div>
+      <div class="vmouse-panel">
+        <div class="vmouse-panel-header">
+          <div class="vmouse-status-indicator">
+            <span class="vmouse-dot" :class="vigemDotClass"></span>
+            <span class="vmouse-status-label">{{ vigemStatusLabel }}</span>
+          </div>
+          <button class="vmouse-refresh-btn" @click="refreshVigemStatus"
+                  :disabled="vigemLoading" :title="$t('config.vigem_refresh')">
+            <i class="fas fa-sync-alt" :class="{ 'fa-spin': vigemLoading }"></i>
+          </button>
+        </div>
+        <div class="vmouse-panel-body">
+          <button v-if="!vigemStatus.installed || !vigemStatus.version_ok"
+                  class="vmouse-action-btn vmouse-install-btn"
+                  @click="installVigem(false)" :disabled="vigemOperating">
+            <span v-if="vigemOperating" class="vmouse-spinner"></span>
+            <i v-else class="fas fa-download"></i>
+            <span>{{ vigemOperating
+              ? $t('config.vigem_installing')
+              : (vigemStatus.installed ? $t('config.vigem_update') : $t('config.vigem_install')) }}</span>
+          </button>
+          <template v-else>
+            <button class="vmouse-action-btn vmouse-install-btn"
+                    @click="installVigem(true)" :disabled="vigemOperating"
+                    :title="$t('config.vigem_reinstall_desc')">
+              <span v-if="vigemOperating" class="vmouse-spinner"></span>
+              <i v-else class="fas fa-sync"></i>
+              <span>{{ vigemOperating ? $t('config.vigem_installing') : $t('config.vigem_reinstall') }}</span>
+            </button>
+            <button class="vmouse-action-btn vmouse-uninstall-btn"
+                    @click="uninstallVigem" :disabled="vigemOperating">
+              <span v-if="vigemOperating" class="vmouse-spinner"></span>
+              <i v-else class="fas fa-trash-alt"></i>
+              <span>{{ vigemOperating ? $t('config.vigem_uninstalling') : $t('config.vigem_uninstall') }}</span>
+            </button>
+          </template>
+        </div>
+      </div>
     </div>
 
     <div class="accordion" v-if="config.gamepad === 'ds4'">
@@ -293,7 +397,7 @@ const vmouseStatusLabel = computed(() => {
       <div class="form-text">{{ $t('config.virtual_mouse_desc') }}</div>
 
       <!-- Tauri 环境：驱动管理面板 -->
-      <div v-if="isTauri" class="vmouse-panel mt-2">
+      <div v-if="hasVmouseDriver" class="vmouse-panel mt-2">
         <div class="vmouse-panel-header">
           <div class="vmouse-status-indicator">
             <span class="vmouse-dot" :class="vmouseDotClass"></span>
