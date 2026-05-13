@@ -77,24 +77,42 @@ rem ============================================================================
 
 echo Cleaning up existing Virtual Mouse driver...
 
-rem Remove ALL existing device nodes (loop until none remain).
-rem Hard cap at 20 iterations to prevent an infinite loop if nefcon reports
-rem success without actually removing anything (observed on some builds).
+rem Remove ALL existing device nodes. Drive the loop by the actual remaining
+rem PnP device count rather than nefcon's exit code, because some nefcon builds
+rem print a delete error yet still return success.
 set "CLEANUP_COUNT=0"
+set "CLEANUP_ITERS=0"
 set "CLEANUP_MAX=20"
+set "NEFCON_REMOVE_LOG=%temp%\sunshine-vmouse-install-nefcon-remove.log"
+call :count_vmouse_devices REMAINING_BEFORE
+echo Found !REMAINING_BEFORE! existing Virtual Mouse device node^(s^).
 :remove_loop
-"%NEFCON%" --remove-device-node --hardware-id Root\ZakoVirtualMouse --class-guid 745a17a0-74d3-11d0-b6fe-00a0c90f57da
-if not errorlevel 1 (
-    set /a CLEANUP_COUNT+=1
-    if !CLEANUP_COUNT! GEQ !CLEANUP_MAX! (
-        echo Reached max remove iterations (!CLEANUP_MAX!), stopping.
-        goto after_remove_loop
-    )
-    echo Removed a device node, checking for more...
+if !REMAINING_BEFORE! LEQ 0 goto after_remove_loop
+if !CLEANUP_ITERS! GEQ !CLEANUP_MAX! (
+    echo WARN: Reached max remove iterations !CLEANUP_MAX!; stopping nefcon cleanup.
+    goto after_remove_loop
+)
+set /a CLEANUP_ITERS+=1
+"%NEFCON%" --remove-device-node --hardware-id Root\ZakoVirtualMouse --class-guid 745a17a0-74d3-11d0-b6fe-00a0c90f57da > "%NEFCON_REMOVE_LOG%" 2>&1
+set "NEFCON_REMOVE_RC=!ERRORLEVEL!"
+for %%I in ("%NEFCON_REMOVE_LOG%") do if %%~zI GTR 0 type "%NEFCON_REMOVE_LOG%"
+call :count_vmouse_devices REMAINING_AFTER
+if !REMAINING_AFTER! LSS !REMAINING_BEFORE! (
+    set /a REMOVED_NOW=REMAINING_BEFORE-REMAINING_AFTER
+    set /a CLEANUP_COUNT+=REMOVED_NOW
+    echo Removed !REMOVED_NOW! device node^(s^), !REMAINING_AFTER! remaining...
+    set "REMAINING_BEFORE=!REMAINING_AFTER!"
     timeout /t 1 /nobreak >nul
     goto remove_loop
 )
+if !NEFCON_REMOVE_RC! GEQ 1 (
+    echo WARN: nefcon returned !NEFCON_REMOVE_RC! with !REMAINING_AFTER! device node^(s^) still present; falling back to pnputil cleanup.
+) else (
+    echo WARN: nefcon did not reduce the remaining device count; falling back to pnputil cleanup.
+)
+set "REMAINING_BEFORE=!REMAINING_AFTER!"
 :after_remove_loop
+if exist "%NEFCON_REMOVE_LOG%" del /f /q "%NEFCON_REMOVE_LOG%" >nul 2>&1
 echo Removed !CLEANUP_COUNT! device node(s) via nefcon.
 
 rem Fallback: use pnputil to remove any remaining device instances
@@ -103,7 +121,12 @@ for /f "tokens=*" %%d in ('powershell -NoProfile -Command ^
     echo Removing remaining device: %%d
     pnputil /remove-device "%%d" >nul 2>&1
 )
-echo All existing device nodes removed.
+call :count_vmouse_devices REMAINING_AFTER_PNPUTIL
+if !REMAINING_AFTER_PNPUTIL! GTR 0 (
+    echo WARN: !REMAINING_AFTER_PNPUTIL! device node^(s^) still remain after pnputil cleanup.
+) else (
+    echo All existing device nodes removed.
+)
 
 timeout /t 2 /nobreak 1>nul
 
@@ -167,3 +190,11 @@ if "!SERVICE_WAS_RUNNING!"=="1" (
 )
 
 exit /b !INSTALL_RESULT!
+
+:count_vmouse_devices
+setlocal
+set "COUNT=0"
+for /f %%C in ('powershell -NoProfile -Command ^
+    "$devices = Get-PnpDevice -InstanceId 'ROOT\HIDCLASS\*' -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains 'Root\ZakoVirtualMouse' }; @($devices).Count"') do set "COUNT=%%C"
+endlocal & set "%~1=%COUNT%"
+exit /b 0
