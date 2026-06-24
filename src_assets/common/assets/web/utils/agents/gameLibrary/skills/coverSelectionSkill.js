@@ -44,6 +44,7 @@ export function createCoverSelectionSkill(options = {}) {
       const apps = [...(context.apps || [])]
       let coversFound = 0
       let cursor = 0
+      let completed = 0
       const results = []
       const concurrency = Math.min(
         Math.max(1, Number(context.options?.coverConcurrency) || defaultConcurrency),
@@ -52,25 +53,43 @@ export function createCoverSelectionSkill(options = {}) {
 
       const processApp = async (app, index) => {
         const key = getGameResourceKey(app, index)
+        context.options?.onSkillProgress?.({
+          skillId: COVER_SELECTION_SKILL_ID,
+          phase: 'item:start',
+          current: completed,
+          total: apps.length,
+          detail: `正在匹配：${app?.name || '未命名游戏'}`,
+        })
 
-        if (app?.['user-override'] === true && app?.['image-path']) {
-          coversFound += 1
-          return { key, skipped: true, app }
-        }
+        try {
+          if (app?.['user-override'] === true && app?.['image-path']) {
+            coversFound += 1
+            return { key, skipped: true, app }
+          }
 
-        const cover = await findCover(app)
-        const next = applyCoverToGameResource(app, cover)
-        if (next !== app) {
-          apps[index] = next
-          coversFound += 1
-          context.options?.onCoverResolved?.(next, {
-            app,
-            cover,
-            index,
-            key,
+          const cover = await findCover(app)
+          const next = applyCoverToGameResource(app, cover)
+          if (next !== app) {
+            apps[index] = next
+            coversFound += 1
+            context.options?.onCoverResolved?.(next, {
+              app,
+              cover,
+              index,
+              key,
+            })
+          }
+          return { key, cover, app: next }
+        } finally {
+          completed += 1
+          context.options?.onSkillProgress?.({
+            skillId: COVER_SELECTION_SKILL_ID,
+            phase: 'item:done',
+            current: completed,
+            total: apps.length,
+            detail: `已处理 ${completed}/${apps.length} 个游戏`,
           })
         }
-        return { key, cover, app: next }
       }
 
       const runWorker = async () => {

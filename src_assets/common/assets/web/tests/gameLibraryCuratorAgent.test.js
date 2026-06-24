@@ -119,6 +119,7 @@ test('game library curator agent can run a selected skill subset', async () => {
 test('cover selection skill limits concurrent cover lookups', async () => {
   let active = 0
   let maxActive = 0
+  const progress = []
   const agent = createGameLibraryCuratorAgent({
     skills: [
       createCoverSelectionSkill({
@@ -138,7 +139,11 @@ test('cover selection skill limits concurrent cover lookups', async () => {
     ],
   })
 
-  const result = await agent.run(Array.from({ length: 5 }, (_, index) => ({ name: `Game ${index}` })))
+  const result = await agent.run(Array.from({ length: 5 }, (_, index) => ({ name: `Game ${index}` })), {
+    onSkillProgress(event) {
+      progress.push(event)
+    },
+  })
 
   assert.equal(maxActive, 2)
   assert.equal(result.stats.coversFound, 5)
@@ -149,6 +154,9 @@ test('cover selection skill limits concurrent cover lookups', async () => {
     'Game 3.jpg',
     'Game 4.jpg',
   ])
+  assert.equal(progress.filter((event) => event.phase === 'item:done').length, 5)
+  assert.equal(progress.at(-1).current, 5)
+  assert.equal(progress.at(-1).total, 5)
 })
 
 test('game library curator agent continues after a skill failure', async () => {

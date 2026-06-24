@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { AppService } from '../services/appService.js'
 import { APP_CONSTANTS, ENV_VARS_CONFIG } from '../utils/constants.js'
 import { debounce, deepClone } from '../utils/helpers.js'
@@ -82,6 +82,24 @@ export function useApps() {
   const scannedApps = ref([])
   const scannedEditSource = ref(null)
   const showScanResult = ref(false)
+  const showScanOptions = ref(false)
+  const scanProgress = reactive({
+    active: false,
+    stage: '',
+    detail: '',
+    current: 0,
+    total: 0,
+    indeterminate: false,
+  })
+  const scanOptions = reactive({
+    scope: 'libraries',
+    platforms: {
+      steam: true,
+      epic: true,
+      gog: true,
+    },
+    extractIcons: true,
+  })
   const scannedAppsSearchQuery = ref('')
   const showGamesOnly = ref(false)
   const selectedAppType = ref('all') // 'all', 'executable', 'shortcut', 'batch', 'command', 'url'
@@ -103,6 +121,15 @@ export function useApps() {
 
   const filteredApps = computed(() => AppService.searchApps(apps.value, committedSearchQuery.value))
   const selectableGameLibrarySkills = computed(() => getGameLibrarySelectableCapabilities())
+  const scanProgressPercent = computed(() => {
+    if (!scanProgress.active || scanProgress.indeterminate || !scanProgress.total) return 0
+    return Math.max(0, Math.min(100, Math.round((scanProgress.current / scanProgress.total) * 100)))
+  })
+  const scanPlatformOptions = [
+    { id: 'steam', label: 'Steam' },
+    { id: 'epic', label: 'Epic Games' },
+    { id: 'gog', label: 'GOG' },
+  ]
 
   // 消息图标映射
   const MESSAGE_ICONS = {
@@ -121,6 +148,88 @@ export function useApps() {
   }
 
   const getMessageIcon = () => MESSAGE_ICONS[messageType.value] || MESSAGE_ICONS.success
+
+  let scanProgressHideTimer = null
+
+  const setScanProgress = (next = {}) => {
+    if (scanProgressHideTimer) {
+      clearTimeout(scanProgressHideTimer)
+      scanProgressHideTimer = null
+    }
+
+    Object.assign(scanProgress, {
+      active: true,
+      stage: next.stage || scanProgress.stage || '正在处理扫描结果',
+      detail: next.detail || '',
+      current: Number.isFinite(Number(next.current)) ? Number(next.current) : scanProgress.current,
+      total: Number.isFinite(Number(next.total)) ? Number(next.total) : scanProgress.total,
+      indeterminate: Boolean(next.indeterminate),
+    })
+  }
+
+  const resetScanProgress = () => {
+    if (scanProgressHideTimer) {
+      clearTimeout(scanProgressHideTimer)
+      scanProgressHideTimer = null
+    }
+    Object.assign(scanProgress, {
+      active: false,
+      stage: '',
+      detail: '',
+      current: 0,
+      total: 0,
+      indeterminate: false,
+    })
+  }
+
+  const completeScanProgress = (detail = 'AI 增强完成') => {
+    setScanProgress({
+      stage: 'AI 增强完成',
+      detail,
+      current: scanProgress.total || scanProgress.current,
+      total: scanProgress.total || scanProgress.current,
+      indeterminate: false,
+    })
+    scanProgressHideTimer = setTimeout(resetScanProgress, 1800)
+  }
+
+  const hasRunnableScanEnhancement = (skillIds) => normalizeGameLibrarySkillIds(skillIds)
+    .some((skillId) => skillId !== GAME_LIBRARY_SKILL_IDS.scanOverrideMemory)
+
+  const updateScanEnhancementProgress = (progress = {}) => {
+    const total = Number(progress.total) || 0
+    const current = Math.min(Number(progress.current) || 0, total || Number(progress.current) || 0)
+
+    if (progress.skillId === GAME_LIBRARY_SKILL_IDS.titleNormalize) {
+      setScanProgress({
+        stage: 'AI 正在清洗游戏名称',
+        detail: progress.detail || progress.message || (total ? `正在处理第 ${current}/${total} 批` : '正在整理游戏名称和搜索关键词'),
+        current,
+        total,
+        indeterminate: !total,
+      })
+      return
+    }
+
+    if (progress.skillId === GAME_LIBRARY_SKILL_IDS.coverSelection) {
+      setScanProgress({
+        stage: 'AI 正在匹配游戏封面',
+        detail: progress.detail || progress.message || (total ? `已处理 ${current}/${total} 个游戏` : '正在搜索候选封面'),
+        current,
+        total,
+        indeterminate: !total,
+      })
+      return
+    }
+
+    setScanProgress({
+      stage: progress.stage || '正在处理扫描结果',
+      detail: progress.detail || progress.message || '',
+      current,
+      total,
+      indeterminate: progress.indeterminate ?? !total,
+    })
+  }
 
   const isGameLibrarySkillEnabled = (skillId) => enabledGameLibrarySkillIds.value.includes(skillId)
 
@@ -146,6 +255,37 @@ export function useApps() {
       ? ''
       : String(document.documentElement?.getAttribute?.('lang') || '').toLowerCase()
     return getGameLibraryCapabilityLabel(skillId, { locale })
+  }
+
+  const openScanOptions = () => {
+    showScanOptions.value = true
+  }
+
+  const closeScanOptions = () => {
+    if (!isScanning.value) {
+      showScanOptions.value = false
+    }
+  }
+
+  const getSelectedScanPlatforms = () => scanPlatformOptions
+    .filter((platformOption) => scanOptions.platforms[platformOption.id])
+    .map((platformOption) => platformOption.id)
+
+  const runConfiguredScan = async () => {
+    if (scanOptions.scope === 'directory') {
+      showScanOptions.value = false
+      await scanDirectory(scanOptions.extractIcons)
+      return
+    }
+
+    const platforms = getSelectedScanPlatforms()
+    if (platforms.length === 0) {
+      showMessage('请至少选择一个游戏平台', APP_CONSTANTS.MESSAGE_TYPES.WARNING)
+      return
+    }
+
+    showScanOptions.value = false
+    await scanGameLibraries({ platforms })
   }
 
   const getScanEnhancementMessage = (count, itemLabel) => {
@@ -464,7 +604,7 @@ export function useApps() {
   }
 
   // 扫描游戏平台库（Steam/Epic/GOG）
-  const scanGameLibraries = async () => {
+  const scanGameLibraries = async (options = {}) => {
     const tauri = window.__TAURI__
     if (!tauri?.core?.invoke) {
       showMessage('扫描功能仅在 Tauri 环境下可用', APP_CONSTANTS.MESSAGE_TYPES.WARNING)
@@ -475,12 +615,16 @@ export function useApps() {
       isScanning.value = true
       showMessage('正在扫描游戏平台库...', APP_CONSTANTS.MESSAGE_TYPES.INFO)
 
-      const result = await tauri.core.invoke('scan_game_libraries')
+      const requestedPlatforms = options.platforms || scanPlatformOptions.map((platformOption) => platformOption.id)
+      const result = await tauri.core.invoke('scan_game_libraries', {
+        platforms: requestedPlatforms,
+      })
 
       // 将 PlatformGame 转换为 scannedApps 格式
-      const steamGames = result.steam || []
-      const epicGames = result.epic || []
-      const gogGames = result.gog || []
+      const selectedPlatforms = new Set(requestedPlatforms)
+      const steamGames = selectedPlatforms.has('steam') ? result.steam || [] : []
+      const epicGames = selectedPlatforms.has('epic') ? result.epic || [] : []
+      const gogGames = selectedPlatforms.has('gog') ? result.gog || [] : []
       const allGames = [...steamGames, ...epicGames, ...gogGames]
 
       if (allGames.length === 0) {
@@ -550,11 +694,26 @@ export function useApps() {
 
   const asyncEnhanceAndUpdateCovers = async (appList, enabledSkillIds = enabledGameLibrarySkillIds.value) => {
     const enabled = normalizeGameLibrarySkillIds(enabledSkillIds)
+    const shouldRunEnhancement = hasRunnableScanEnhancement(enabled)
     let result
+
+    if (!shouldRunEnhancement) {
+      resetScanProgress()
+      return
+    }
+
+    setScanProgress({
+      stage: '准备 AI 增强',
+      detail: `将处理 ${appList.length} 个扫描结果`,
+      current: 0,
+      total: appList.length,
+      indeterminate: true,
+    })
 
     try {
       result = await runGameLibraryCuratorAgent(appList, {
         enabledSkills: enabled,
+        onSkillProgress: updateScanEnhancementProgress,
         onTitlesEnhanced(enhanced, { changed }) {
           applyEnhancedScannedApps(appList, enhanced)
           if (changed > 0) {
@@ -582,6 +741,7 @@ export function useApps() {
     } catch (error) {
       console.warn('Game library enrichment failed:', error)
       showMessage('游戏资源增强不可用，已保留原始扫描结果', APP_CONSTANTS.MESSAGE_TYPES.INFO)
+      completeScanProgress('AI 增强不可用，已保留扫描结果')
       return
     }
 
@@ -593,6 +753,8 @@ export function useApps() {
         coversFound > 0 ? APP_CONSTANTS.MESSAGE_TYPES.SUCCESS : APP_CONSTANTS.MESSAGE_TYPES.INFO
       )
     }
+
+    completeScanProgress('扫描结果已更新')
   }
 
   // 扫描应用字段处理
@@ -775,6 +937,10 @@ export function useApps() {
     isScanning,
     scannedApps,
     showScanResult,
+    showScanOptions,
+    scanProgress,
+    scanOptions,
+    scanPlatformOptions,
     scannedAppsSearchQuery,
     showGamesOnly,
     selectedAppType,
@@ -788,6 +954,7 @@ export function useApps() {
     messageClass,
     filteredScannedApps,
     scanResultStats,
+    scanProgressPercent,
     // 方法
     init,
     loadApps,
@@ -816,6 +983,9 @@ export function useApps() {
     hasUnsavedChanges,
     onDragStart,
     onDragEnd,
+    openScanOptions,
+    closeScanOptions,
+    runConfiguredScan,
     scanDirectory,
     scanGameLibraries,
     addScannedApp,

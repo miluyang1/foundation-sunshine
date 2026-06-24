@@ -1,6 +1,7 @@
 import { API_ENDPOINTS } from './constants.js'
 import { buildLocalizedInstruction, getCurrentLocale, getPromptLanguageName } from './aiLocale.js'
 import { createAiCache } from './aiCache.js'
+import { fetchAiJson } from './aiProxyFetch.js'
 
 const MAX_ITEMS_PER_BATCH = 20
 const MIN_RENAME_CONFIDENCE = 0.82
@@ -140,17 +141,11 @@ async function callAiForBatch(batch) {
     max_tokens: 4096,
   }
 
-  const response = await fetch(API_ENDPOINTS.AI_CHAT_COMPLETIONS, {
+  const data = await fetchAiJson(API_ENDPOINTS.AI_CHAT_COMPLETIONS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    const message = typeof data.error === 'string' ? data.error : data.error?.message
-    throw new Error(message || `AI metadata request failed: ${response.status}`)
-  }
 
   const content = data.choices?.[0]?.message?.content || ''
   const jsonText = extractJsonObject(content)
@@ -162,7 +157,7 @@ async function callAiForBatch(batch) {
   return Array.isArray(parsed.items) ? parsed.items : []
 }
 
-export async function enhanceScannedGameNames(apps) {
+export async function enhanceScannedGameNames(apps, options = {}) {
   if (!Array.isArray(apps) || apps.length === 0) {
     return apps
   }
@@ -188,12 +183,35 @@ export async function enhanceScannedGameNames(apps) {
   })
 
   const batches = splitIntoBatches(misses)
-  for (const batch of batches) {
+  options.onProgress?.({
+    phase: 'start',
+    current: 0,
+    total: batches.length,
+    detail: batches.length > 0
+      ? `需要清洗 ${misses.length} 个游戏名称`
+      : '名称已从缓存命中',
+  })
+
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const batch = batches[batchIndex]
     let aiItems = []
+    options.onProgress?.({
+      phase: 'batch:start',
+      current: batchIndex,
+      total: batches.length,
+      detail: `正在清洗第 ${batchIndex + 1}/${batches.length} 批 (${batch.length} 个游戏)`,
+    })
+
     try {
       aiItems = await callAiForBatch(batch)
     } catch (error) {
       console.warn('AI metadata enhancement failed for batch; skipping:', error)
+      options.onProgress?.({
+        phase: 'batch:error',
+        current: batchIndex + 1,
+        total: batches.length,
+        detail: `第 ${batchIndex + 1}/${batches.length} 批清洗失败，继续后续步骤`,
+      })
       continue
     }
     const byId = new Map(aiItems.map((item) => [String(item.id), item]))
@@ -206,6 +224,13 @@ export async function enhanceScannedGameNames(apps) {
         metadataCache.set(cacheKey, aiItem)
       }
     }
+
+    options.onProgress?.({
+      phase: 'batch:done',
+      current: batchIndex + 1,
+      total: batches.length,
+      detail: `已完成 ${batchIndex + 1}/${batches.length} 批名称清洗`,
+    })
   }
 
   return enhanced

@@ -192,6 +192,7 @@ test('enhanceScannedGameNames skips failed batches and keeps later successes', a
   const originalFetch = globalThis.fetch
   const originalWarn = console.warn
   let fetchCalls = 0
+  const progress = []
 
   console.warn = () => {}
   globalThis.fetch = async () => {
@@ -229,12 +230,25 @@ test('enhanceScannedGameNames skips failed batches and keeps later successes', a
 
   try {
     const apps = Array.from({ length: 21 }, (_, index) => ({ name: `game-${index}.exe` }))
-    const result = await enhanceScannedGameNames(apps)
+    const result = await enhanceScannedGameNames(apps, {
+      onProgress(event) {
+        progress.push(event)
+      },
+    })
 
     assert.equal(fetchCalls, 2)
     assert.equal(result[0].name, 'game-0.exe')
     assert.equal(result[20].name, 'Recovered Game')
     assert.equal(result[20]['canonical-name'], 'Recovered Game')
+    assert.deepEqual(
+      progress
+        .filter((event) => event.phase === 'batch:start')
+        .map((event) => [event.current, event.total]),
+      [[0, 2], [1, 2]]
+    )
+    assert.equal(progress.at(-1).phase, 'batch:done')
+    assert.equal(progress.at(-1).current, 2)
+    assert.equal(progress.at(-1).total, 2)
   } finally {
     globalThis.fetch = originalFetch
     console.warn = originalWarn

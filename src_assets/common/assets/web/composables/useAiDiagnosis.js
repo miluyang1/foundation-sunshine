@@ -2,6 +2,7 @@ import { ref, reactive } from 'vue'
 import { API_ENDPOINTS } from '../utils/constants.js'
 import { buildLocalizedInstruction, getCurrentLocale, getPromptLanguageName } from '../utils/aiLocale.js'
 import { runDiagnosticsAgent } from '../utils/agents/diagnostics/diagnosticsAgent.js'
+import { fetchAiJson } from '../utils/aiProxyFetch.js'
 
 const DEFAULT_CONFIG = {
   enabled: false,
@@ -95,16 +96,6 @@ function buildLocalDiagnosticsSummary(diagnostics) {
   }, null, 2)
 }
 
-async function fetchJson(url, options = {}) {
-  const resp = await fetch(url, options)
-  const data = await resp.json().catch(() => ({}))
-  if (!resp.ok || data.status === 'error') {
-    const message = typeof data.error === 'string' ? data.error : data.error?.message
-    throw new Error(message || `Request failed: ${resp.status}`)
-  }
-  return data
-}
-
 export function useAiDiagnosis() {
   const config = reactive({ ...DEFAULT_CONFIG })
   const isConfigLoading = ref(false)
@@ -121,7 +112,7 @@ export function useAiDiagnosis() {
     error.value = ''
 
     try {
-      const remote = await fetchJson(API_ENDPOINTS.AI_CONFIG)
+      const remote = await fetchAiJson(API_ENDPOINTS.AI_CONFIG)
       Object.assign(config, normalizeConfig(remote))
 
     } catch (e) {
@@ -164,6 +155,8 @@ export function useAiDiagnosis() {
       return
     }
 
+    await loadConfig()
+
     const diagnostics = await runDiagnosticsAgent(logs)
     localFindings.value = diagnostics.findings || []
     localSuggestions.value = diagnostics.suggestions || []
@@ -188,7 +181,7 @@ export function useAiDiagnosis() {
     })
 
     try {
-      const data = await fetchJson(API_ENDPOINTS.AI_CHAT_COMPLETIONS, {
+      const data = await fetchAiJson(API_ENDPOINTS.AI_CHAT_COMPLETIONS, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

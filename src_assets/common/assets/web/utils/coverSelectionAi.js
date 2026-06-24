@@ -3,6 +3,7 @@ import { API_ENDPOINTS } from './constants.js'
 import { getCoverSearchCandidates } from './gameMetadataAi.js'
 import { buildLocalizedInstruction, getCurrentLocale, getPromptLanguageName } from './aiLocale.js'
 import { createAiCache } from './aiCache.js'
+import { fetchAiJson } from './aiProxyFetch.js'
 
 const MAX_SEARCH_TERMS = 3
 const MAX_COVERS_PER_TERM = 6
@@ -215,10 +216,10 @@ async function askAiToPickCover(app, candidates) {
   const locale = getCurrentLocale()
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), AI_COVER_SELECTION_TIMEOUT_MS)
-  let response
+  let data
 
   try {
-    response = await fetch(API_ENDPOINTS.AI_CHAT_COMPLETIONS, {
+    data = await fetchAiJson(API_ENDPOINTS.AI_CHAT_COMPLETIONS, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
@@ -252,12 +253,6 @@ async function askAiToPickCover(app, candidates) {
     })
   } finally {
     clearTimeout(timeoutId)
-  }
-
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    const message = typeof data.error === 'string' ? data.error : data.error?.message
-    throw new Error(message || `AI cover selection failed: ${response.status}`)
   }
 
   const content = data.choices?.[0]?.message?.content || ''

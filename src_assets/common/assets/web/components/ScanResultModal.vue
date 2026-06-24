@@ -153,6 +153,23 @@
           </div>
         </div>
 
+        <div v-if="enhancementProgress.active" class="scan-result-progress" role="status" aria-live="polite">
+          <div class="scan-progress-copy">
+            <i class="fas fa-wand-magic-sparkles"></i>
+            <span>{{ enhancementProgress.stage }}</span>
+            <small v-if="enhancementProgress.detail">{{ enhancementProgress.detail }}</small>
+          </div>
+          <div v-if="enhancementProgress.total" class="scan-progress-count">
+            {{ enhancementProgress.current }}/{{ enhancementProgress.total }}
+          </div>
+          <div
+            class="scan-progress-bar"
+            :class="{ 'scan-progress-bar--indeterminate': enhancementProgress.indeterminate }"
+          >
+            <span :style="{ width: enhancementProgress.indeterminate ? '42%' : `${enhancementProgressPercent}%` }"></span>
+          </div>
+        </div>
+
         <!-- 应用列表 -->
         <div class="scan-result-body">
           <div v-if="apps.length === 0" class="text-center text-muted py-4">
@@ -295,6 +312,21 @@ const props = defineProps({
   saving: {
     type: Boolean,
     default: false,
+  },
+  enhancementProgress: {
+    type: Object,
+    default: () => ({
+      active: false,
+      stage: '',
+      detail: '',
+      current: 0,
+      total: 0,
+      indeterminate: false,
+    }),
+  },
+  enhancementProgressPercent: {
+    type: Number,
+    default: 0,
   },
 })
 
